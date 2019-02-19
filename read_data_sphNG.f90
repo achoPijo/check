@@ -15,7 +15,7 @@
 !  a) You must cause the modified files to carry prominent notices
 !     stating that you changed the files and the date of any change.
 !
-!  Copyright (C) 2005-2015 Daniel Price. All rights reserved.
+!  Copyright (C) 2005-2017 Daniel Price. All rights reserved.
 !  Contact: daniel.price@monash.edu
 !
 !-----------------------------------------------------------------
@@ -68,8 +68,8 @@ module sphNGread
  real :: tfreefall
  integer :: istartmhd,istartrt,nmhd,idivvcol,icurlvxcol,icurlvycol,icurlvzcol
  integer :: nhydroreal4,istart_extra_real4
- integer :: nhydroarrays,nmhdarrays
- logical :: phantomdump,smalldump,mhddump,rtdump,usingvecp,igotmass,h2chem,rt_in_header
+ integer :: nhydroarrays,nmhdarrays,ndustarrays
+ logical :: phantomdump,smalldump,mhddump,rtdump,usingvecp,igotmass,h2chem,rt_in_header,onefluid_dust
  logical :: usingeulr,cleaning
  logical :: batcode,tagged,debug
  integer, parameter :: maxarrsizes = 10
@@ -78,7 +78,7 @@ module sphNGread
  character(len=lentag) :: tagarr(maxplot)
  integer, parameter :: itypemap_sink_phantom = 3
  integer, parameter :: itypemap_dust_phantom = 2
- integer, parameter :: itypemap_unknown_phantom = 8
+ integer, parameter :: itypemap_unknown_phantom = 9
 
  !------------------------------------------
  ! generic interface to utilities for tagged
@@ -88,7 +88,7 @@ module sphNGread
   module procedure extract_int, extract_real4, extract_real8, &
          extract_intarr, extract_real4arr, extract_real8arr
  end interface extract
- 
+
 contains
 
  !-------------------------------------------------------------------
@@ -99,15 +99,17 @@ contains
 
   select case(int(iphase))
   case(0)
-    itypemap_sphNG = 1
+    itypemap_sphNG = 1 ! gas
+  case(11:)
+    itypemap_sphNG = 2 ! dust
   case(1:9)
-    itypemap_sphNG = 3
-  case(10:)
-    itypemap_sphNG = 4
+    itypemap_sphNG = 4 ! nptmass
+  case(10)
+    itypemap_sphNG = 5 ! star
   case default
-    itypemap_sphNG = 5
-  end select  
-  
+    itypemap_sphNG = 6 ! unknown
+  end select
+
  end function itypemap_sphNG
 
  !---------------------------------------------------------------------
@@ -115,18 +117,18 @@ contains
  !---------------------------------------------------------------------
  elemental integer function itypemap_phantom(iphase)
   integer*1, intent(in) :: iphase
-  
+
   select case(int(iphase))
   case(1:2)
     itypemap_phantom = iphase
-  case(3:6) ! put sinks as type 3, everything else shifted by one
+  case(3:7) ! put sinks as type 3, everything else shifted by one
     itypemap_phantom = iphase + 1
   case(-3) ! sink particles, either from external_binary or read from dump
     itypemap_phantom = itypemap_sink_phantom
   case default
     itypemap_phantom = itypemap_unknown_phantom
   end select
-  
+
  end function itypemap_phantom
 
  !------------------------------------------
@@ -155,7 +157,7 @@ contains
   enddo over_tags
   if (matched) ierr = 0
   if (ierr /= 0) print "(a)",' ERROR: could not find '//trim(adjustl(tag))//' in header'
-  
+
  end subroutine extract_int
 
  !------------------------------------------
@@ -185,7 +187,7 @@ contains
   enddo over_tags
   if (matched) ierr = 0
   if (ierr /= 0) print "(a)",' ERROR: could not find '//trim(adjustl(tag))//' in header'
-  
+
  end subroutine extract_real8
 
  !------------------------------------------
@@ -215,7 +217,7 @@ contains
   enddo over_tags
   if (matched) ierr = 0
   if (ierr /= 0) print "(a)",' ERROR: could not find '//trim(adjustl(tag))//' in header'
-  
+
  end subroutine extract_real4
 
  !------------------------------------------
@@ -242,7 +244,7 @@ contains
   enddo over_tags
   if (nmatched==size(ival)) ierr = 0
   if (ierr /= 0) print "(a)",' ERROR: could not find '//trim(adjustl(tag))//' in header'
- 
+
  end subroutine extract_intarr
 
  !------------------------------------------
@@ -270,7 +272,7 @@ contains
   enddo over_tags
   if (nmatched==size(rval)) ierr = 0
   if (ierr /= 0) print "(a)",' ERROR: could not find '//trim(adjustl(tag))//' in header'
-  
+
  end subroutine extract_real8arr
 
  !------------------------------------------
@@ -298,17 +300,17 @@ contains
   enddo over_tags
   if (nmatched==size(rval)) ierr = 0
   if (ierr /= 0) print "(a)",' ERROR: could not find '//trim(adjustl(tag))//' in header'
-  
+
  end subroutine extract_real4arr
 
  !----------------------------------------------------------------------
  ! Extract various options from the fileident string
  !----------------------------------------------------------------------
  subroutine get_options_from_fileident(fileident,smalldump,tagged,phantomdump,&
-                       usingvecp,usingeulr,cleaning,h2chem,rt_in_header,batcode)
+                       usingvecp,usingeulr,cleaning,h2chem,use_dustfrac,rt_in_header,batcode)
   character(len=*), intent(in) :: fileident
   logical,          intent(out) :: smalldump,tagged,phantomdump,batcode
-  logical,          intent(out) :: usingvecp,usingeulr,cleaning,h2chem,rt_in_header
+  logical,          intent(out) :: usingvecp,usingeulr,cleaning,h2chem,use_dustfrac,rt_in_header
 
   smalldump = .false.
   phantomdump = .false.
@@ -319,6 +321,7 @@ contains
   rt_in_header = .false.
   batcode = .false.
   tagged = .false.
+  use_dustfrac = .false.
   if (fileident(1:1).eq.'S') then
      smalldump = .true.
   endif
@@ -345,11 +348,77 @@ contains
   if (index(fileident,'RT=on').ne.0) then
      rt_in_header = .true.
   endif
+  if (index(fileident,'1dust').ne.0) then
+     use_dustfrac = .true.
+  endif
   if (index(fileident,'This is a test').ne.0) then
      batcode = .true.
   endif
 
  end subroutine get_options_from_fileident
+
+ !----------------------------------------------------------------------
+ ! Set position of header items manually for older (untagged) formats
+ !----------------------------------------------------------------------
+ subroutine fake_header_tags(nreals,realarr,tagsreal)
+  integer, intent(in) :: nreals
+  real,    intent(in) :: realarr(nreals)
+  character(len=*), intent(out) :: tagsreal(:)
+  integer, parameter :: ilocbinary = 24
+  integer :: ipos
+  !
+  !--set the tags manually for older formats
+  !  (but only the ones we care about)
+  !
+  if (phantomdump) then
+     tagsreal(1) = 'time'
+     tagsreal(3) = 'gamma'
+     tagsreal(4) = 'rhozero'
+     tagsreal(6) = 'hfact'
+     tagsreal(7) = 'tolh'
+     tagsreal(15:19) = 'massoftype'
+     if (nreals.ge.ilocbinary + 14) then
+        if (nreals.ge.ilocbinary + 15) then
+           ipos = ilocbinary
+        else
+           print*,'*** WARNING: obsolete header format for external binary information ***'
+           ipos = ilocbinary + 1
+        endif
+        if (debug) print*,'DEBUG: reading binary information from header ',ilocbinary
+        if (any(realarr(ilocbinary:ilocbinary+14).ne.0.)) then
+           tagsreal(ipos:ipos+2) = (/'x1','y1','z1'/)
+           if (nreals.ge.ilocbinary+15) then
+              tagsreal(ipos+3:ipos+9) = (/'m1','h1','x2','y2','z2','m2','h2'/)
+              ipos = ipos + 10
+           else
+              tagsreal(ipos+3:ipos+7) = (/'h1','x2','y2','z2','h2'/)
+              ipos = ipos + 8
+           endif
+           tagsreal(ipos:ipos+5) = (/'vx1','vy1','vz1','vx2','vy2','vz2'/)
+        endif
+     endif
+  elseif (batcode) then
+     tagsreal(1) = 'time'
+     tagsreal(3) = 'gamma'
+     tagsreal(4) = 'radL1'
+     tagsreal(5) = 'PhiL1'
+     tagsreal(15) = 'Er'
+  else
+     tagsreal(1) = 'gt'
+     tagsreal(2) = 'dtmax'
+     tagsreal(3) = 'gamma'
+     tagsreal(4) = 'rhozero'
+     tagsreal(5) = 'RK2'
+     if (smalldump) then ! sphNG small dump
+        if (nreals.eq.15) then
+           tagsreal(15) = 'pmassinitial'
+        else
+           tagsreal(23) = 'pmassinitial'
+        endif
+     endif
+  endif
+
+ end subroutine fake_header_tags
 
  !----------------------------------------------------------------------
  ! Routine to read the header of sphNG dump files and extract relevant
@@ -358,6 +427,7 @@ contains
  subroutine read_header(iunit,iverbose,debug,doubleprec,&
                         npart,npartoftypei,n1,ntypes,nblocks,&
                         narrsizes,realarr,tagsreal,nreals,ierr)
+  use settings_data,  only:ndusttypes
   integer, intent(in)  :: iunit,iverbose
   logical, intent(in)  :: debug,doubleprec
   integer, intent(out) :: npart,npartoftypei(:),n1,ntypes,nblocks,narrsizes,nreals,ierr
@@ -368,7 +438,8 @@ contains
   real(doub_prec)       :: real8arr(maxinblock)
   real(sing_prec)       :: real4arr(maxinblock)
   integer               :: i,ierr1,ierr2,ierrs(4)
-  integer               :: nints,ninttypes,nreal4s,nreal8s,n2,nreassign,naccrete,nkill
+  integer               :: nints,ninttypes,nreal4s,nreal8s
+  integer               :: n2,nreassign,naccrete,nkill
   real(doub_prec), allocatable :: dattemp(:)
   real(sing_prec), allocatable :: dattempsingle(:)
 
@@ -403,6 +474,10 @@ contains
         if (phantomdump) then
            call extract('ntypes',ntypes,intarr,tags,nints,ierr)
            if (ierr /= 0) return
+           if (ntypes > maxparttypes) then
+              print "(a,i2)",' WARNING: number of particle types exceeds array limits: ignoring types > ',maxparttypes
+              ntypes = maxparttypes
+           endif
            call extract('npartoftype',npartoftypei(1:ntypes),intarr,tags,nints,ierr)
            if (ierr /= 0) return
         endif
@@ -450,11 +525,6 @@ contains
      endif
   endif
 
-  if (ntypes > maxparttypes) then
-     print "(a,i2)",' WARNING: number of particle types exceeds array limits: ignoring types > ',maxparttypes
-     ntypes = maxparttypes
-  endif
-
 !--int*1, int*2, int*4, int*8
   ierr1 = 0
   ierr2 = 0
@@ -479,41 +549,7 @@ contains
         print*,'WARNING: number of reals in header exceeds splash array limit, ignoring some'
         nreals = maxinblock
      endif
-     if (tagged) then
-        read(iunit,iostat=ierr) tagsreal(1:nreals)
-     else
-     !
-     !--set the tags manually for older formats
-     !  (but only the ones we care about)
-     !
-        if (phantomdump) then
-           tagsreal(1) = 'time'
-           tagsreal(3) = 'gamma'
-           tagsreal(4) = 'rhozero'
-           tagsreal(6) = 'hfact'
-           tagsreal(7) = 'tolh'
-           tagsreal(15:19) = 'massoftype'
-        elseif (batcode) then
-           tagsreal(1) = 'time'
-           tagsreal(3) = 'gamma'
-           tagsreal(4) = 'radL1'
-           tagsreal(5) = 'PhiL1'
-           tagsreal(15) = 'Er'
-        else
-           tagsreal(1) = 'gt'
-           tagsreal(2) = 'dtmax'
-           tagsreal(3) = 'gamma'
-           tagsreal(4) = 'rhozero'
-           tagsreal(5) = 'RK2'
-           if (smalldump) then ! sphNG small dump
-              if (nreals.eq.15) then
-                 tagsreal(15) = 'pmassinitial'
-              else
-                 tagsreal(23) = 'pmassinitial'
-              endif
-           endif
-        endif
-     endif
+     if (tagged) read(iunit,iostat=ierr) tagsreal(1:nreals)
      if (doubleprec) then
         read(iunit,iostat=ierr) real8arr(1:nreals)
         realarr(1:nreals) = real(real8arr(1:nreals))
@@ -521,7 +557,18 @@ contains
         read(iunit,iostat=ierr) real4arr(1:nreals)
         realarr(1:nreals) = real(real4arr(1:nreals))
      endif
+     if (.not.tagged) call fake_header_tags(nreals,realarr,tagsreal)
   endif
+!
+!--append integers to realarr so they can be used in
+!  legends and calculated quantities
+!
+ if (nreals+nints <= maxinblock) then
+    tagsreal(nreals+1:nreals+nints) = tags(1:nints)
+    realarr(nreals+1:nreals+nints)  = real(intarr(1:nints))
+    nreals = nreals + nints
+ endif
+
 !--real*4, real*8
   read(iunit,iostat=ierr) nreal4s
   if (nreal4s > 0) then
@@ -555,6 +602,18 @@ contains
      if (any(ierrs /= 0)) then
         print "(a)",' *** error reading units'
      endif
+     ! extract the number of dust arrays are in the file
+     if (onefluid_dust) ndusttypes = extract_ndusttypes(tags,tagsreal,intarr,nints)
+!
+!--append real*8s to realarr so they can be used in
+!  legends and calculated quantities
+!
+     if (nreals+nreal8s <= maxinblock) then
+        tagsreal(nreals+1:nreals+nreal8s) = tags(1:nreal8s)
+        realarr(nreals+1:nreals+nreal8s)  = real(real8arr(1:nreal8s))
+        nreals = nreals + nreal8s
+     endif
+
   else
      if (nreal8s.ge.4) then
         read(iunit,iostat=ierr) udist,umass,utime,umagfd
@@ -605,7 +664,7 @@ contains
   integer*8, intent(out)   :: isize(:)
   integer,   intent(out)   :: nint,nint1,nint2,nint4,nint8,nreal,nreal4,nreal8,ierr
   integer,   intent(inout) :: ntotblock,npart,ntotal,nptmasstot,ncolstep
-  
+
   read(iunit,iostat=ierr) isize(iarr),nint,nint1,nint2,nint4,nint8,nreal,nreal4,nreal8
   if (iarr.eq.1) then
      ntotblock = isize(iarr)
@@ -645,15 +704,14 @@ contains
   logical, intent(out) :: gotbinary
   real :: rhozero,tfreefall,tff,radL1,PhiL1,Er,RK2,dtmax,tolh
   real :: massoftypei(ntypes)
-  integer :: i,ierrs(10),ipos
+  integer :: i,ierrs(10)
   integer :: itype
-  integer, parameter :: ilocbinary = 24
   real,    parameter :: pi=3.141592653589
-  
+
   if (phantomdump) then
      call extract('time',time,realarr,tags,nreals,ierrs(1))
   else
-     call extract('gt',time,realarr,tags,nreals,ierrs(1))  
+     call extract('gt',time,realarr,tags,nreals,ierrs(1))
   endif
   call extract('gamma',gamma,realarr,tags,nreals,ierrs(2))
   call extract('rhozero',rhozero,realarr,tags,nreals,ierrs(3))
@@ -685,56 +743,37 @@ contains
      !--if Phantom calculation uses the binary potential
      !  then read this as two point mass particles
      !
-     if (nreals.ge.ilocbinary + 14) then
-        if (nreals.ge.ilocbinary + 15) then
-           ipos = ilocbinary
-        else
-           print*,'*** WARNING: obsolete header format for external binary information ***'
-           ipos = ilocbinary + 1
+     if (any(tags(1:nreals)=='x1')) then
+        gotbinary = .true.
+        npartoftype(itypemap_sink_phantom) = npartoftype(itypemap_sink_phantom) + 2
+        ntotal = ntotal + 2
+        call extract('x1',dat(npart+1,ix(1)),realarr,tags,nreals,ierrs(1))
+        call extract('y1',dat(npart+1,ix(2)),realarr,tags,nreals,ierrs(2))
+        call extract('z1',dat(npart+1,ix(3)),realarr,tags,nreals,ierrs(3))
+        if (ipmass.gt.0) call extract('m1',dat(npart+1,ipmass),realarr,tags,nreals,ierrs(4))
+        call extract('h1',dat(npart+1,ih),realarr,tags,nreals,ierrs(4))
+        if (debug) print *,npart+1,npart+2
+        if (iverbose.ge.1) print *,'binary position:   primary: ',dat(npart+1,ix(1):ix(3))
+
+        call extract('x2',dat(npart+2,ix(1)),realarr,tags,nreals,ierrs(1))
+        call extract('y2',dat(npart+2,ix(2)),realarr,tags,nreals,ierrs(2))
+        call extract('z2',dat(npart+2,ix(3)),realarr,tags,nreals,ierrs(3))
+        if (ipmass.gt.0) call extract('m2',dat(npart+2,ipmass),realarr,tags,nreals,ierrs(4))
+        call extract('h2',dat(npart+2,ih),realarr,tags,nreals,ierrs(5))
+        if (iverbose.ge.1 .and. ipmass > 0 .and. ih > 0) then
+           print *,'                 secondary: ',dat(npart+2,ix(1):ix(3))
+           print *,' m1: ',dat(npart+1,ipmass),' m2:',dat(npart+2,ipmass),&
+                   ' h1: ',dat(npart+2,ipmass),' h2:',dat(npart+2,ih)
         endif
-        if (debug) print*,'DEBUG: reading binary information from header ',ilocbinary
-        if (any(realarr(ilocbinary:ilocbinary+14).ne.0.)) then
-           gotbinary = .true.
-           npartoftype(itypemap_sink_phantom) = npartoftype(itypemap_sink_phantom) + 2
-           ntotal = ntotal + 2
-           dat(npart+1,ix(1)) = realarr(ipos)
-           dat(npart+1,ix(2)) = realarr(ipos+1)
-           dat(npart+1,ix(3)) = realarr(ipos+2)
-           if (debug) print *,npart+1,npart+2
-           if (iverbose.ge.1) print *,'binary position:   primary: ',realarr(ipos:ipos+2)
-           if (nreals.ge.ilocbinary+15) then
-              if (ipmass.gt.0) dat(npart+1,ipmass) = realarr(ipos+3)
-              dat(npart+1,ih)     = realarr(ipos+4)
-              dat(npart+2,ix(1))  = realarr(ipos+5)
-              dat(npart+2,ix(2))  = realarr(ipos+6)
-              dat(npart+2,ix(3))  = realarr(ipos+7)
-              if (ipmass.gt.0) dat(npart+2,ipmass) = realarr(ipos+8)
-              dat(npart+2,ih)     = realarr(ipos+9)
-              if (iverbose.ge.1) then
-                 print *,'                 secondary: ',realarr(ipos+5:ipos+7)
-                 print *,' m1: ',realarr(ipos+3),' m2:',realarr(ipos+8),&
-                         ' h1: ',realarr(ipos+4),' h2:',realarr(ipos+9)
-              endif
-              ipos = ipos + 10
-           else
-              dat(npart+1,ih)    = realarr(ipos+3)
-              dat(npart+2,ix(1)) = realarr(ipos+4)
-              dat(npart+2,ix(2)) = realarr(ipos+5)
-              dat(npart+2,ix(3)) = realarr(ipos+6)
-              dat(npart+2,ih)    = realarr(ipos+7)
-              print *,'                 secondary: ', realarr(ipos+4:ipos+6)
-              ipos = ipos + 8
-           endif
-           if (ivx.gt.0) then
-              dat(npart+1,ivx)   = realarr(ipos)
-              dat(npart+1,ivx+1) = realarr(ipos+1)
-              dat(npart+1,ivx+2) = realarr(ipos+2)
-              dat(npart+2,ivx)   = realarr(ipos+3)
-              dat(npart+2,ivx+1) = realarr(ipos+4)
-              dat(npart+2,ivx+2) = realarr(ipos+5)
-           endif
-           npart  = npart  + 2
+        if (ivx.gt.0) then
+           call extract('vx1',dat(npart+1,ivx),realarr,tags,nreals,ierrs(1))
+           call extract('vy1',dat(npart+1,ivx+1),realarr,tags,nreals,ierrs(2))
+           call extract('vz1',dat(npart+1,ivx+2),realarr,tags,nreals,ierrs(3))
+           call extract('vx2',dat(npart+2,ivx),realarr,tags,nreals,ierrs(4))
+           call extract('vy2',dat(npart+2,ivx+1),realarr,tags,nreals,ierrs(5))
+           call extract('vz2',dat(npart+2,ivx+2),realarr,tags,nreals,ierrs(6))
         endif
+        npart  = npart  + 2
      endif
   else
      npartoftype(:) = 0
@@ -763,15 +802,17 @@ contains
            ' t/t_ff: ',tff,' rhozero: ',rhozero,' dtmax: ',dtmax
   endif
  end subroutine extract_variables_from_header
- 
+
 !---------------------------------------------------------------
 ! old subroutine for guessing labels in non-tagged sphNG format
 !---------------------------------------------------------------
- subroutine guess_labels(ncolumns,iamvec,label,labelvec,istartmhd,istart_extra_real4,nmhd,nhydroreal4, &
-                         ndimV,irho,iBfirst,ivx,iutherm,idivB,iJfirst,iradenergy,icv,&
-                         udist,utime,units,unitslabel)
+ subroutine guess_labels(ncolumns,iamvec,label,labelvec,istartmhd, &
+             istart_extra_real4,nmhd,nhydroreal4,ndimV,irho,iBfirst,ivx,&
+             iutherm,idivB,iJfirst,iradenergy,icv,udist,utime,units,&
+             unitslabel)
   use geometry, only:labelcoord
-  integer, intent(in) :: ncolumns,istartmhd,istart_extra_real4,nmhd,nhydroreal4,ndimV,irho
+  integer, intent(in) :: ncolumns,istartmhd,istart_extra_real4
+  integer, intent(in) :: nmhd,nhydroreal4,ndimV,irho
   integer, intent(out) :: iBfirst,ivx,iutherm,idivB,iJfirst,iradenergy,icv
   integer, intent(inout) :: iamvec(:)
   character(len=*), intent(inout) :: label(:),labelvec(:),unitslabel(:)
@@ -779,7 +820,7 @@ contains
   real,    intent(inout) :: units(:)
   integer :: i
   real(doub_prec) :: uergg
-  
+
 !--the following only for mhd small dumps or full dumps
   if (ncolumns.ge.7) then
      if (mhddump) then
@@ -924,11 +965,12 @@ contains
   endif
  end subroutine guess_labels
 
- integer function assign_column(tag,iarr,ipos,ikind,imaxcolumnread) result(icolumn)
+ integer function assign_column(tag,iarr,ipos,ikind,imaxcolumnread,idustarr) result(icolumn)
   use labels, only:ih,irho,ix,ipmass
   character(len=lentag), intent(in) :: tag
   integer,               intent(in) :: iarr,ipos,ikind
   integer,               intent(inout) :: imaxcolumnread
+  integer,               intent(inout) :: idustarr
 
   if (tagged .and. len_trim(tag) > 0) then
      !
@@ -949,14 +991,24 @@ contains
         icolumn = ih
      case('rho')
         icolumn = irho
+     case('dustfracsum')
+        idustarr = idustarr + 1
+        icolumn = nhydroarrays + idustarr
+     case('dustfrac')
+        if (ndustarrays > 0) then
+           idustarr = idustarr + 1
+           icolumn = nhydroarrays + idustarr
+        else
+           icolumn = max(nhydroarrays + ndustarrays + nmhdarrays + 1,imaxcolumnread + 1)
+        endif
      case('Bx')
-        icolumn = nhydroarrays + 1
+        icolumn = nhydroarrays + ndustarrays + 1
      case('By')
-        icolumn = nhydroarrays + 2
+        icolumn = nhydroarrays + ndustarrays + 2
      case('Bz')
-        icolumn = nhydroarrays + 3
+        icolumn = nhydroarrays + ndustarrays + 3
      case default
-        icolumn = max(nhydroarrays + nmhdarrays + 1,imaxcolumnread + 1)
+        icolumn = max(nhydroarrays + ndustarrays + nmhdarrays + 1,imaxcolumnread + 1)
         if (iarr==1) then
            if (ikind==4) then  ! real*4 array
               istart_extra_real4 = min(istart_extra_real4,icolumn)
@@ -1019,38 +1071,77 @@ contains
 
  end function assign_column
 
+!---------------------------------------------------------------
+! function to extract the number of dust arrays
+!---------------------------------------------------------------
+ integer function extract_ndusttypes(tags,tagsreal,intarr,nints) result(ndusttypes)
+  character(len=lentag), intent(in) :: tags(maxinblock),tagsreal(maxinblock)
+  integer, intent(in) :: intarr(:),nints
+  integer :: i,idust,ierr,ndustsmall,ndustlarge
+  logical :: igotndusttypes = .false.
+
+  ! Look for ndusttypes in the header
+  do i = 1,maxinblock
+     if (trim(tags(i))=='ndusttypes') then
+         igotndusttypes = .true.
+     endif
+  enddo
+
+  ! Retreive/guess the value of ndusttypes
+  if (igotndusttypes) then
+     call extract('ndusttypes',idust,intarr,tags,nints,ierr)
+  else
+     call extract('ndustsmall',ndustsmall,intarr,tags,nints,ierr)
+     call extract('ndustlarge',ndustlarge,intarr,tags,nints,ierr)
+     idust = ndustsmall+ndustlarge
+     ! For older files where ndusttypes is not output to the header
+     if (ierr /= 0) then
+        idust = 0
+        do i = 1,maxinblock
+           if (tagsreal(i)=='grainsize') idust = idust + 1
+        enddo
+        write(*,"(a)")    ' Warning! Could not find ndusttypes in header'
+        write(*,"(a,I4)") '          ...counting grainsize arrays...ndusttypes =',idust
+     endif
+  endif
+  ndusttypes = idust
+
+ end function extract_ndusttypes
+
 end module sphNGread
 
 !----------------------------------------------------------------------
 !  Main read_data routine for splash
 !----------------------------------------------------------------------
-subroutine read_data(rootname,indexstart,nstepsread)
-  use particle_data,  only:dat,gamma,time,iamtype,npartoftype,maxpart,maxstep,maxcol,masstype
+subroutine read_data(rootname,indexstart,iposn,nstepsread)
+  use particle_data,  only:dat,gamma,time,headervals,&
+                      iamtype,npartoftype,maxpart,maxstep,maxcol,masstype
   !use params,         only:int1,int8
   use settings_data,  only:ndim,ndimV,ncolumns,ncalc,required,ipartialread,&
-                      lowmemorymode,ntypes,iverbose
+                      lowmemorymode,ntypes,iverbose,ndusttypes
   use mem_allocation, only:alloc
   use system_utils,   only:lenvironment,renvironment
-  use labels,         only:ipmass,irho,ih,ix,ivx,labeltype,print_types
+  use labels,         only:ipmass,irho,ih,ix,ivx,labeltype,print_types,headertags
   use calcquantities, only:calc_quantities
+  use asciiutils,     only:make_tags_unique
   use sphNGread
   implicit none
-  integer, intent(in)  :: indexstart
+  integer, intent(in)  :: indexstart,iposn
   integer, intent(out) :: nstepsread
   character(len=*), intent(in) :: rootname
   integer :: i,j,k,ierr,iunit
   integer :: intg1,int2,int3,ilocvx,iversion
   integer :: i1,iarr,i2,iptmass1,iptmass2
-  integer :: npart_max,nstep_max,ncolstep,icolumn,nptmasstot
+  integer :: npart_max,nstep_max,ncolstep,icolumn,idustarr,nptmasstot
   integer :: narrsizes
   integer :: nskip,ntotal,npart,n1,ngas,nreals
   integer :: iblock,nblocks,ntotblock,ncolcopy
-  integer :: ipos,nptmass,nptmassi,nstar,nunknown,ilastrequired
-  integer :: imaxcolumnread,nhydroarraysinfile,nremoved
+  integer :: ipos,nptmass,nptmassi,ndust,nstar,nunknown,ilastrequired
+  integer :: imaxcolumnread,nhydroarraysinfile,nremoved,nhdr
   integer :: itype,iphaseminthistype,iphasemaxthistype,nthistype,iloc
   integer, dimension(maxparttypes) :: npartoftypei
   real,    dimension(maxparttypes) :: massoftypei
-  real    :: pmassi,hi,rhoi,hrlim,rad2d
+  real    :: pmassi,hi,rhoi
   logical :: iexist, doubleprec,imadepmasscolumn,gotbinary,gotiphase
 
   character(len=len(rootname)+10) :: dumpfile
@@ -1069,7 +1160,7 @@ subroutine read_data(rootname,indexstart,nstepsread)
   real :: hfact,omega
   logical :: skip_corrupted_block_3
   character(len=lentag) :: tagsreal(maxinblock), tagtmp
-  
+
   integer, parameter :: splash_max_iversion = 1
 
   nstepsread = 0
@@ -1185,7 +1276,7 @@ subroutine read_data(rootname,indexstart,nstepsread)
    mhddump = .false.
    rtdump = .false.
    call get_options_from_fileident(fileident,smalldump,tagged,phantomdump,&
-                                   usingvecp,usingeulr,cleaning,h2chem,rt_in_header,batcode)
+                                   usingvecp,usingeulr,cleaning,h2chem,onefluid_dust,rt_in_header,batcode)
    if (tagged .and. iversion < 1) print "(a)",'ERROR: got tagged format but iversion is ',iversion
 !
 !--read variables from header
@@ -1279,8 +1370,8 @@ subroutine read_data(rootname,indexstart,nstepsread)
 !--   to handle both small and full dumps, we need to place the quantities dumped
 !     in both small and full dumps at the start of the dat array
 !     quantities only in the full dump then come after
-!     also means that hydro/MHD are "semi-compatible" in the sense that x,y,z,m,h and rho
-!     are in the same place for both types of dump
+!     also means that hydro/MHD are "semi-compatible" in the sense that x,y,z,m,h
+!     and rho are in the same place for both types of dump
 !
       ix(1) = 1
       ix(2) = 2
@@ -1304,6 +1395,16 @@ subroutine read_data(rootname,indexstart,nstepsread)
          nhydroarrays = nreal(1)+nreal4(1)+nreal8(1)
       elseif (phantomdump .and. (nreal(1).lt.3 .or. nreal4(1).lt.1)) then
          print "(a)",' ERROR: x,y,z or h missing in phantom read'
+      endif
+      if (onefluid_dust) then
+         if (ndusttypes>1) then
+            ndustarrays = 0
+            !ndustarrays = ndusttypes + 1      !--the extra column is for dustfracsum
+         else
+            ndustarrays = 1
+         endif
+      else
+         ndustarrays = 0
       endif
       if (narrsizes.ge.4) then
          nmhdarrays = 3 ! Bx,By,Bz
@@ -1373,6 +1474,10 @@ subroutine read_data(rootname,indexstart,nstepsread)
            gotbinary,nblocks,nptmasstot,npartoftypei,ntypes,&
            time(j),gamma(j),hfact,npart,ntotal,npartoftype(:,j),masstype(:,j), &
            dat(:,:,j),ix,ih,ipmass,ivx)
+      nhdr = min(nreals,maxhdr)
+      headervals(1:nhdr,j) = dummyreal(1:nhdr)
+      headertags(1:nhdr)   = tagsreal(1:nhdr)
+      call make_tags_unique(nhdr,headertags)
 
       nstepsread = nstepsread + 1
       !
@@ -1398,6 +1503,7 @@ subroutine read_data(rootname,indexstart,nstepsread)
 !
    imaxcolumnread = 0
    icolumn = 0
+   idustarr   = 0
    istartmhd = 0
    istartrt = 0
    i1 = i2 + 1
@@ -1433,9 +1539,9 @@ subroutine read_data(rootname,indexstart,nstepsread)
          enddo
          if (nint1(iarr).lt.1) then
             if (.not.phantomdump .or. any(npartoftypei(2:).gt.0)) then
-               print "(a)",' WARNING: can''t locate iphase in dump'
+               if (iverbose > 0) print "(a)",' WARNING: can''t locate iphase in dump'
             elseif (phantomdump) then
-               print "(a)",' WARNING: can''t locate iphase in dump'
+               if (iverbose > 0) print "(a)",' WARNING: can''t locate iphase in dump'
             endif
             gotiphase = .false.
             !--skip remaining integer arrays
@@ -1500,7 +1606,7 @@ subroutine read_data(rootname,indexstart,nstepsread)
                      if (debug) print*,'DEBUG: reading sink array ',k,isize(iarr),' tag = ',trim(tagtmp)
                      read(iunit,end=33,iostat=ierr) dattemp(1:isize(iarr))
                      if (ierr /= 0) print*,' ERROR during read of sink particle data, array ',k
-                     
+
                      select case(k)
                      case(1:3)
                         iloc = ix(k)
@@ -1631,7 +1737,7 @@ subroutine read_data(rootname,indexstart,nstepsread)
          do i=1,nreal(iarr)
             tagtmp = ''
             if (tagged) read(iunit,end=33,iostat=ierr) tagtmp
-            icolumn = assign_column(tagtmp,iarr,i,6,imaxcolumnread)
+            icolumn = assign_column(tagtmp,iarr,i,6,imaxcolumnread,idustarr)
             if (tagged) tagarr(icolumn) = tagtmp
             if (debug)  print*,' reading real ',icolumn,' tag = ',trim(tagtmp)
             if (required(icolumn)) then
@@ -1671,7 +1777,7 @@ subroutine read_data(rootname,indexstart,nstepsread)
          endif
 !
 !        real4 arrays (may need converting if splash is compiled in double precision)
-! 
+!
          if (nreal4(iarr).gt.0 .and. kind(dat).eq.doub_prec) then
             if (allocated(dattempsingle)) deallocate(dattempsingle)
             allocate(dattempsingle(isize(iarr)),stat=ierr)
@@ -1686,7 +1792,7 @@ subroutine read_data(rootname,indexstart,nstepsread)
          do i=1,nreal4(iarr)
             tagtmp = ''
             if (tagged) read(iunit,end=33,iostat=ierr) tagtmp
-            icolumn = assign_column(tagtmp,iarr,i,4,imaxcolumnread)
+            icolumn = assign_column(tagtmp,iarr,i,4,imaxcolumnread,idustarr)
             if (debug) print*,'reading real4 ',icolumn,' tag = ',trim(tagtmp)
             if (tagged) tagarr(icolumn) = tagtmp
 
@@ -1738,9 +1844,13 @@ subroutine read_data(rootname,indexstart,nstepsread)
                         rhoi = massoftypei(1)*(hfact/hi)**3
                      elseif (hi.lt.0.) then
                         rhoi = massoftypei(1)*(hfact/abs(hi))**3
+                        npartoftype(1,j) = npartoftype(1,j) - 1
+                        npartoftype(itypemap_unknown_phantom,j) = npartoftype(itypemap_unknown_phantom,j) + 1
                         iphase(k) = -1
                      else ! if h = 0.
                         rhoi = 0.
+                        npartoftype(1,j) = npartoftype(1,j) - 1
+                        npartoftype(itypemap_unknown_phantom,j) = npartoftype(itypemap_unknown_phantom,j) + 1
                         iphase(k) = -2
                      endif
                      if (required(irho)) dat(k,irho,j) = rhoi
@@ -1754,7 +1864,7 @@ subroutine read_data(rootname,indexstart,nstepsread)
          do i=1,nreal8(iarr)
             tagtmp = ''
             if (tagged) read(iunit,end=33,iostat=ierr) tagtmp
-            icolumn = assign_column(tagtmp,iarr,i,8,imaxcolumnread)
+            icolumn = assign_column(tagtmp,iarr,i,8,imaxcolumnread,idustarr)
             if (debug) print*,'reading real8 ',icolumn,' tag = ',trim(tagtmp)
             if (tagged) tagarr(icolumn) = tagtmp
             if (required(icolumn)) then
@@ -1803,27 +1913,6 @@ subroutine read_data(rootname,indexstart,nstepsread)
        .and. lenvironment('SSPLASH_RESET_CM') .and. allocated(iphase)) then
        call reset_centre_of_mass(dat(1:n1,1:3,j),dat(1:n1,4,j),iphase(1:n1),n1)
     endif
- ! 
- !--remove particles at large H/R is "SSPLASH_REMOVE_LARGE_HR" is set
- !
-    if (lenvironment('SSPLASH_REMOVE_LARGE_HR')) then
-       hrlim = renvironment('SSPLASH_HR_LIMIT')
-       print "(a)", 'SSPLASH_REMOVE_LARGE_HR set:'
-       print "(a)", 'Removing particles at large H/R values'
-       print "(a,F7.4)", 'H/R limit set to ',hrlim
-       
-       nremoved = 0
-       do i = 1,npart
-          if (int(iphase(i)) == 0) then
-             rad2d = sqrt(dat(i,1,j)**2 + dat(i,2,j)**2)
-             if (abs(dat(i,3,j) / rad2d) >= hrlim) then
-                iphase(i) = -1
-                nremoved  = nremoved + 1
-             endif
-          endif
-       enddo
-       print "(I5,a)", nremoved, ' particles removed at large H/R'
-    endif
  !
  !--reset corotating frame velocities if environment variable "SSPLASH_OMEGA" is set
  !
@@ -1851,7 +1940,8 @@ subroutine read_data(rootname,indexstart,nstepsread)
 
     nptmassi = 0
     nunknown = 0
-    ngas = 0
+    ngas  = 0
+    ndust = 0
     nstar = 0
     !--can only do this loop if we have read the iphase array
     iphasealloc: if (allocated(iphase)) then
@@ -1873,11 +1963,9 @@ subroutine read_data(rootname,indexstart,nstepsread)
                       iamtype(i,j) = itypemap_unknown_phantom
                    endif
                 endif
-             case(itypemap_unknown_phantom)
-                nunknown = nunknown + 1
-             end select
+            end select
           enddo
-       else
+      else
        !
        !--sphNG: translate iphase to splash types
        !
@@ -1887,9 +1975,11 @@ subroutine read_data(rootname,indexstart,nstepsread)
              select case(itype)
              case(1)
                ngas = ngas + 1
-             case(3)
-               nptmassi = nptmassi + 1
+             case(2)
+               ndust = ndust + 1
              case(4)
+               nptmassi = nptmassi + 1
+             case(5)
                nstar = nstar + 1
              case default
                nunknown = nunknown + 1
@@ -1987,12 +2077,17 @@ subroutine read_data(rootname,indexstart,nstepsread)
 
      call set_labels
      if (.not.phantomdump) then
+        if (ngas /= npart - nptmassi - ndust - nstar - nunknown) &
+           print*,'WARNING!!! ngas =',ngas,'but should be',npart-nptmassi-ndust-nstar-nunknown
+        if (ndust /= npart - nptmassi - ngas - nstar - nunknown) &
+           print*,'WARNING!!! ndust =',ndust,'but should be',npart-nptmassi-ngas-nstar-nunknown
         npartoftype(:,j) = 0
-        npartoftype(1,j) = npart - nptmassi - nstar - nunknown
-        npartoftype(2,j) = ntotal - npart
-        npartoftype(3,j) = nptmassi
-        npartoftype(4,j) = nstar
-        npartoftype(5,j) = nunknown
+        npartoftype(1,j) = ngas  ! npart - nptmassi - ndust - nstar - nunknown
+        npartoftype(2,j) = ndust ! npart - nptmassi - ngas  - nstar - nunknown
+        npartoftype(3,j) = ntotal - npart
+        npartoftype(4,j) = nptmassi
+        npartoftype(5,j) = nstar
+        npartoftype(6,j) = nunknown
      else
         npartoftype(1,j) = npartoftype(1,j) - nunknown
         npartoftype(itypemap_unknown_phantom,j) = npartoftype(itypemap_unknown_phantom,j) + nunknown
@@ -2096,19 +2191,22 @@ end subroutine read_data
 
 subroutine set_labels
   use labels, only:label,unitslabel,labelzintegration,labeltype,labelvec,iamvec, &
-              ix,ipmass,irho,ih,iutherm,ivx,iBfirst,idivB,iJfirst,icv,iradenergy,idustfrac
+              ix,ipmass,irho,ih,iutherm,ivx,iBfirst,idivB,iJfirst,icv,iradenergy,&
+              idustfrac,ideltav,idustfracsum,ideltavsum,igrainsize,igraindens, &
+              ivrel,make_vector_label
   use params
-  use settings_data,   only:ndim,ndimV,ntypes,ncolumns,UseTypeInRenderings,debugmode
+  use settings_data,   only:ndim,ndimV,ntypes,ncolumns,UseTypeInRenderings,debugmode,ndusttypes
   use geometry,        only:labelcoord
-  use settings_units,  only:units,unitzintegration
+  use settings_units,  only:units,unitzintegration,get_nearest_length_unit,get_nearest_time_unit
   use sphNGread
-  use asciiutils,      only:lcase
+  use asciiutils,      only:lcase,make_tags_unique,match_tag
   use system_commands, only:get_environment
   use system_utils,    only:lenvironment
   implicit none
-  integer :: i
-  real(doub_prec)   :: uergg
-  character(len=20) :: string
+  integer :: i,j
+  real(doub_prec)   :: unitx
+  character(len=20) :: string,unitlabelx
+  character(len=20) :: deltav_string
 
   if (ndim.le.0 .or. ndim.gt.3) then
      print*,'*** ERROR: ndim = ',ndim,' in set_labels ***'
@@ -2130,7 +2228,8 @@ subroutine set_labels
      ih = 4       !  smoothing length
   endif
   irho = ih + 1     !  density
-  if (smalldump .and. nhydroreal4.ge.3) iutherm = irho+1
+  iutherm = 0
+  idustfrac = 0
 
   !
   !--translate array tags into column labels, where necessary
@@ -2165,8 +2264,12 @@ subroutine set_labels
            iJfirst = i
         case('psi')
            label(i) = '\psi'
-        case('dustfrac')
-           idustfrac = i
+        case('dustfracsum')
+           idustfracsum = i
+        case('deltavsumx')
+           ideltavsum = i
+        case('deltavx')
+           ideltav = i
         case('alpha')
            label(i) = '\alpha'
         case('alphaB')
@@ -2202,12 +2305,19 @@ subroutine set_labels
            label(i) = 'e^- abundance'
         case('abco')
            label(i) = 'CO abundance'
+        case('grainsize')
+           igrainsize = i
+        case('graindens')
+           igraindens = i
+        case('vrel')
+           ivrel = i
         case default
            if (debugmode) print "(a,i2)",' DEBUG: Unknown label '''//trim(tagarr(i))//''' in column ',i
            label(i) = tagarr(i)
         end select
      enddo
   else
+     if (smalldump .and. nhydroreal4.ge.3) iutherm = irho+1
      call guess_labels(ncolumns,iamvec,label,labelvec,istartmhd,istart_extra_real4,&
           nmhd,nhydroreal4,ndimV,irho,iBfirst,ivx,iutherm,idivB,iJfirst,&
           iradenergy,icv,udist,utime,units,unitslabel)
@@ -2224,43 +2334,44 @@ subroutine set_labels
   if (icurlvycol.gt.0) label(icurlvycol) = 'curl v_y'
   if (icurlvzcol.gt.0) label(icurlvzcol) = 'curl v_z'
   if (icurlvxcol.gt.0 .and. icurlvycol.gt.0 .and. icurlvzcol.gt.0) then
-     iamvec(icurlvxcol:icurlvzcol) = icurlvxcol
-     labelvec(icurlvxcol:icurlvzcol) = 'curl v'
+     call make_vector_label('curl v',icurlvxcol,ndimV,iamvec,labelvec,label,labelcoord(:,1))
+  endif
+  if (ideltavsum.gt.0) then
+     ! Modify the deltavsum labels to have vector subscripts
+     do j=1,ndimV
+        label(ideltavsum+j-1) = 'deltavsum'//'_'//labelcoord(j,1)
+     enddo
+     ! Make N deltav labels with vector subscripts
+     do i = ideltavsum+ndimV,ideltav,ndimV
+        write(deltav_string,'(I10)') (i-ideltavsum)/ndimV
+        write(deltav_string,'(A)') 'deltav'//trim(adjustl(deltav_string))
+        do j=1,ndimV
+           label(i+j-1) = trim(deltav_string)//'_'//labelcoord(j,1)
+        enddo
+     enddo
   endif
   !
   !--set labels for vector quantities
   !
-  if (ivx.gt.0) then
-     iamvec(ivx:ivx+ndimV-1) = ivx
-     labelvec(ivx:ivx+ndimV-1) = 'v'
-     do i=1,ndimV
-        label(ivx+i-1) = trim(labelvec(ivx))//'_'//labelcoord(i,1)
-     enddo
-  endif
-  if (iBfirst.gt.0) then
-     iamvec(iBfirst:iBfirst+ndimV-1) = iBfirst
-     labelvec(iBfirst:iBfirst+ndimV-1) = 'B'
-     do i=1,ndimV
-        label(iBfirst+i-1) = trim(labelvec(iBfirst))//'_'//labelcoord(i,1)
-     enddo
-  endif
-  if (iJfirst.gt.0) then
-     iamvec(iJfirst:iJfirst+ndimV-1) = iJfirst
-     labelvec(iJfirst:iJfirst+ndimV-1) = 'J'
-     do i=1,ndimV
-        label(iJfirst+i-1) = trim(labelvec(iJfirst))//'_'//labelcoord(i,1)
-     enddo
-  endif
+  call make_vector_label('v',ivx,ndimV,iamvec,labelvec,label,labelcoord(:,1))
+  call make_vector_label('B',iBfirst,ndimV,iamvec,labelvec,label,labelcoord(:,1))
+  call make_vector_label('J',iJfirst,ndimV,iamvec,labelvec,label,labelcoord(:,1))
+  !
+  !--ensure labels are unique by appending numbers where necessary
+  !
+  call make_tags_unique(ncolumns,label)
+  !
+  !--identify dust fraction in the case where there is only one species
+  !
+  idustfrac = match_tag(label,'dustfrac')
   !
   !--set units for plot data
   !
-!   npower = int(log10(udist))
-!   udist = udist/10.**npower
-!   udistAU = udist/1.495979e13
-   if (ndim.ge.3) then
-      units(1:3) = udist
-      unitslabel(1:3) = ' [cm]'
-   endif
+  call get_nearest_length_unit(udist,unitx,unitlabelx)
+  if (ndim.ge.3) then
+     units(1:3) = unitx
+     unitslabel(1:3) = unitlabelx
+  endif
 !   do i=1,3
 !      write(unitslabel(i),"('[ 10\u',i2,'\d cm]')") npower
 !   enddo
@@ -2268,11 +2379,19 @@ subroutine set_labels
       units(ipmass) = umass
       unitslabel(ipmass) = ' [g]'
    endif
-   units(ih) = udist
-   unitslabel(ih) = ' [cm]'
+   units(ih) = unitx
+   unitslabel(ih) = unitlabelx
    if (ivx.gt.0) then
       units(ivx:ivx+ndimV-1) = udist/utime
       unitslabel(ivx:ivx+ndimV-1) = ' [cm/s]'
+   endif
+   if (ideltavsum.gt.0) then
+      units(ideltavsum:ideltav+ndimV-1) = udist/utime
+      unitslabel(ideltavsum:ideltav+ndimV-1) = ' [cm/s]'
+   endif
+   if (ideltav.gt.0) then
+      units(ideltav:ideltav+ndimV-1) = udist/utime
+      unitslabel(ideltav:ideltav+ndimV-1) = ' [cm/s]'
    endif
    if (iutherm.gt.0) then
       units(iutherm) = (udist/utime)**2
@@ -2283,6 +2402,18 @@ subroutine set_labels
    if (iBfirst.gt.0) then
       units(iBfirst:iBfirst+ndimV-1) = umagfd
       unitslabel(iBfirst:iBfirst+ndimV-1) = ' [G]'
+   endif
+   if (igrainsize.gt.0) then
+       units(igrainsize) = udist
+       unitslabel(igrainsize) = ' [cm]'
+   endif
+   if (igraindens.gt.0) then
+       units(igraindens) = umass/udist**3
+       unitslabel(igraindens) = ' [g/cm\u3\d]'
+   endif
+   if (ivrel.gt.0) then
+      units(ivrel) = udist/utime/100
+      unitslabel(ivrel) = ' [m/s]'
    endif
 
    !--use the following two lines for time in years
@@ -2308,12 +2439,9 @@ subroutine set_labels
       units(0) = 1./tfreefall
       unitslabel(0) = ' '
    case default
-      units(0) = utime/3.1536d7
-      unitslabel(0) = ' yrs'
+      call get_nearest_time_unit(utime,unitx,unitslabel(0))
+      units(0) = unitx ! convert to real*4
    end select
-   !--or use these two lines for time in free-fall times
-   !units(0) = 1./tfreefall
-   !unitslabel(0) = ' '
 
   unitzintegration = udist
   labelzintegration = ' [cm]'
@@ -2323,36 +2451,39 @@ subroutine set_labels
   if (phantomdump) then  ! phantom
      ntypes = itypemap_unknown_phantom
      labeltype(1) = 'gas'
-     labeltype(2) = 'dust'
-     labeltype(3) = 'boundary'
-     labeltype(4) = 'star'
-     labeltype(5) = 'dark matter'
-     labeltype(6) = 'bulge'
-     labeltype(6) = 'helium'
-     labeltype(8) = 'unknown/dead'
+     labeltype(2) = 'dust (old)'
+     labeltype(3) = 'sink'
+     labeltype(4) = 'ghost'
+     labeltype(5) = 'star'
+     labeltype(6) = 'dark matter'
+     labeltype(7) = 'bulge'
+     labeltype(8) = 'dust'
+     labeltype(9) = 'unknown/dead'
      UseTypeInRenderings(:) = .true.
      UseTypeInRenderings(3) = .false.
      if (lenvironment('SSPLASH_PLOT_DUST')) then
         UseTypeInRenderings(2) = .false.
      endif
      if (lenvironment('SSPLASH_PLOT_STARS')) then
-        UseTypeInRenderings(4) = .false.
-     endif
-     if (lenvironment('SSPLASH_PLOT_DM')) then
         UseTypeInRenderings(5) = .false.
      endif
+     if (lenvironment('SSPLASH_PLOT_DM')) then
+        UseTypeInRenderings(6) = .false.
+     endif
   else
-     ntypes = 5
+     ntypes = 6
      labeltype(1) = 'gas'
-     labeltype(2) = 'ghost'
-     labeltype(3) = 'sink'
-     labeltype(4) = 'star'
-     labeltype(5) = 'unknown/dead'
+     labeltype(2) = 'dust'
+     labeltype(3) = 'ghost'
+     labeltype(4) = 'sink'
+     labeltype(5) = 'star'
+     labeltype(6) = 'unknown/dead'
      UseTypeInRenderings(1) = .true.
-     UseTypeInRenderings(2) = .true.
-     UseTypeInRenderings(3) = .false.
-     UseTypeInRenderings(4) = .true.
-     UseTypeInRenderings(5) = .true.  ! only applies if turned on
+     UseTypeInRenderings(2) = .false.
+     UseTypeInRenderings(3) = .true.
+     UseTypeInRenderings(4) = .false.
+     UseTypeInRenderings(5) = .true.
+     UseTypeInRenderings(6) = .true.  ! only applies if turned on
   endif
 
 !-----------------------------------------------------------
